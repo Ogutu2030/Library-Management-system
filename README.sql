@@ -1,285 +1,606 @@
-# Library-Management-system
--- Library Management System Database
+# File structure:
+# - main.py (FastAPI application)
+# - database.py (Database connections and setup)
+# - models.py (Pydantic models for validation)
+# - requirements.txt (Dependencies)
+# - .env.example (Example environment variables)
 
--- Drop database if it exists (for clean initialization)
-DROP DATABASE IF EXISTS library_management;
-CREATE DATABASE library_management;
-USE library_management;
+##########################
+# File: database.py
+##########################
 
--- TABLES CREATION
+import mysql.connector
+from mysql.connector import Error
+import os
+from dotenv import load_dotenv
 
--- Members table (stores library users' information)
-CREATE TABLE members (
-    member_id INT AUTO_INCREMENT PRIMARY KEY,
-    first_name VARCHAR(50) NOT NULL,
-    last_name VARCHAR(50) NOT NULL,
-    email VARCHAR(100) UNIQUE NOT NULL,
-    phone_number VARCHAR(15),
-    address VARCHAR(255),
-    date_of_birth DATE,
-    registration_date DATE NOT NULL,
-    membership_status ENUM('Active', 'Expired', 'Suspended') NOT NULL DEFAULT 'Active',
-    membership_expiry DATE NOT NULL
-);
+# Load environment variables
+load_dotenv()
 
--- Member_cards table (1-1 relationship with members)
-CREATE TABLE member_cards (
-    card_id INT AUTO_INCREMENT PRIMARY KEY,
-    member_id INT UNIQUE NOT NULL,
-    issue_date DATE NOT NULL,
-    expiry_date DATE NOT NULL,
-    FOREIGN KEY (member_id) REFERENCES members(member_id) ON DELETE CASCADE
-);
+# Database configuration 
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_USER = os.getenv("DB_USER", "root")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
+DB_NAME = os.getenv("DB_NAME", "task_management")
 
--- Authors table
-CREATE TABLE authors (
-    author_id INT AUTO_INCREMENT PRIMARY KEY,
-    first_name VARCHAR(50) NOT NULL,
-    last_name VARCHAR(50) NOT NULL,
-    birth_year INT,
-    death_year INT,
-    nationality VARCHAR(50),
-    biography TEXT
-);
+def create_connection():
+    """Create a database connection to MySQL server"""
+    connection = None
+    try:
+        connection = mysql.connector.connect(
+            host=DB_HOST,
+            user=DB_USER,
+            passwd=DB_PASSWORD,
+            database=DB_NAME
+        )
+        print("Connection to MySQL DB successful")
+    except Error as e:
+        print(f"The error '{e}' occurred")
+    
+    return connection
 
--- Publishers table
-CREATE TABLE publishers (
-    publisher_id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    address VARCHAR(255),
-    contact_email VARCHAR(100),
-    contact_phone VARCHAR(15),
-    established_year INT
-);
+def execute_query(connection, query, params=None):
+    """Execute a query with optional parameters"""
+    cursor = connection.cursor(dictionary=True)
+    try:
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
+        connection.commit()
+        return cursor
+    except Error as e:
+        print(f"The error '{e}' occurred")
+        return None
 
--- Categories table
-CREATE TABLE categories (
-    category_id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(50) NOT NULL,
-    description TEXT,
-    parent_category_id INT,
-    FOREIGN KEY (parent_category_id) REFERENCES categories(category_id) ON DELETE SET NULL
-);
+def initialize_database():
+    """Create database and tables if they don't exist"""
+    try:
+        # First connect without specifying a database to create it if needed
+        conn = mysql.connector.connect(
+            host=DB_HOST,
+            user=DB_USER,
+            passwd=DB_PASSWORD
+        )
+        
+        # Create database if it doesn't exist
+        cursor = conn.cursor()
+        cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DB_NAME}")
+        cursor.close()
+        conn.close()
+        
+        # Now connect to the database
+        connection = create_connection()
+        
+        # Create users table
+        create_users_table = """
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(50) NOT NULL UNIQUE,
+            email VARCHAR(100) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            first_name VARCHAR(50),
+            last_name VARCHAR(50),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            role ENUM('admin', 'user') DEFAULT 'user'
+        );
+        """
+        
+        # Create projects table
+        create_projects_table = """
+        CREATE TABLE IF NOT EXISTS projects (
+            project_id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            description TEXT,
+            owner_id INT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            deadline DATE,
+            status ENUM('active', 'completed', 'on_hold', 'cancelled') DEFAULT 'active',
+            FOREIGN KEY (owner_id) REFERENCES users(user_id) ON DELETE CASCADE
+        );
+        """
+        
+        # Create tasks table
+        create_tasks_table = """
+        CREATE TABLE IF NOT EXISTS tasks (
+            task_id INT AUTO_INCREMENT PRIMARY KEY,
+            title VARCHAR(100) NOT NULL,
+            description TEXT,
+            project_id INT,
+            assigned_to INT,
+            created_by INT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            due_date DATE,
+            priority ENUM('low', 'medium', 'high', 'urgent') DEFAULT 'medium',
+            status ENUM('todo', 'in_progress', 'review', 'done') DEFAULT 'todo',
+            FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE SET NULL,
+            FOREIGN KEY (assigned_to) REFERENCES users(user_id) ON DELETE SET NULL,
+            FOREIGN KEY (created_by) REFERENCES users(user_id) ON DELETE CASCADE
+        );
+        """
+        
+        # Execute table creation queries
+        execute_query(connection, create_users_table)
+        execute_query(connection, create_projects_table)
+        execute_query(connection, create_tasks_table)
+        
+        # Insert sample data if tables are empty
+        cursor = connection.cursor()
+        cursor.execute("SELECT COUNT(*) FROM users")
+        user_count = cursor.fetchone()[0]
+        
+        if user_count == 0:
+            insert_sample_data(connection)
+        
+        cursor.close()
+        connection.close()
+        print("Database initialized successfully")
+        
+    except Error as e:
+        print(f"Error initializing database: {e}")
 
--- Books table
-CREATE TABLE books (
-    book_id INT AUTO_INCREMENT PRIMARY KEY,
-    isbn VARCHAR(20) UNIQUE NOT NULL,
-    title VARCHAR(255) NOT NULL,
-    publisher_id INT,
-    publication_year INT,
-    edition VARCHAR(20),
-    language VARCHAR(30) DEFAULT 'English',
-    page_count INT,
-    description TEXT,
-    FOREIGN KEY (publisher_id) REFERENCES publishers(publisher_id) ON DELETE SET NULL
-);
+def insert_sample_data(connection):
+    """Insert sample data into the database"""
+    
+    # Insert sample users
+    sample_users = """
+    INSERT INTO users (username, email, password_hash, first_name, last_name, role)
+    VALUES
+        ('admin', 'admin@example.com', '$2b$12$BPgM6HQNbJnCQwSG8dO4e.LV4TCMwRoD1Wt7xm7LvGj8fHIHGrR1.', 'Admin', 'User', 'admin'),
+        ('john_doe', 'john@example.com', '$2b$12$BPgM6HQNbJnCQwSG8dO4e.LV4TCMwRoD1Wt7xm7LvGj8fHIHGrR1.', 'John', 'Doe', 'user'),
+        ('jane_smith', 'jane@example.com', '$2b$12$BPgM6HQNbJnCQwSG8dO4e.LV4TCMwRoD1Wt7xm7LvGj8fHIHGrR1.', 'Jane', 'Smith', 'user');
+    """
+    
+    # Insert sample projects
+    sample_projects = """
+    INSERT INTO projects (name, description, owner_id, deadline, status)
+    VALUES
+        ('Website Redesign', 'Update the company website with modern design', 1, DATE_ADD(CURRENT_DATE, INTERVAL 30 DAY), 'active'),
+        ('Mobile App Development', 'Create a new mobile application for customers', 2, DATE_ADD(CURRENT_DATE, INTERVAL 60 DAY), 'active'),
+        ('Database Migration', 'Migrate legacy database to new system', 1, DATE_ADD(CURRENT_DATE, INTERVAL 15 DAY), 'on_hold');
+    """
+    
+    # Insert sample tasks
+    sample_tasks = """
+    INSERT INTO tasks (title, description, project_id, assigned_to, created_by, due_date, priority, status)
+    VALUES
+        ('Design Homepage', 'Create mockups for the new homepage', 1, 3, 1, DATE_ADD(CURRENT_DATE, INTERVAL 7 DAY), 'high', 'in_progress'),
+        ('Backend API', 'Develop REST API endpoints', 1, 2, 1, DATE_ADD(CURRENT_DATE, INTERVAL 14 DAY), 'high', 'todo'),
+        ('User Authentication', 'Implement login and registration', 2, 2, 2, DATE_ADD(CURRENT_DATE, INTERVAL 10 DAY), 'urgent', 'in_progress'),
+        ('Database Schema Design', 'Design new database schema', 3, 1, 1, DATE_ADD(CURRENT_DATE, INTERVAL 5 DAY), 'medium', 'review'),
+        ('Data Export Script', 'Write script to export old data', 3, 2, 1, DATE_ADD(CURRENT_DATE, INTERVAL 8 DAY), 'medium', 'todo');
+    """
+    
+    execute_query(connection, sample_users)
+    execute_query(connection, sample_projects)
+    execute_query(connection, sample_tasks)
+    print("Sample data inserted successfully")
 
--- Book copies table (represents physical instances of books)
-CREATE TABLE book_copies (
-    copy_id INT AUTO_INCREMENT PRIMARY KEY,
-    book_id INT NOT NULL,
-    acquisition_date DATE NOT NULL,
-    cost DECIMAL(10, 2),
-    status ENUM('Available', 'On Loan', 'Reserved', 'Lost', 'Under Repair') NOT NULL DEFAULT 'Available',
-    location VARCHAR(50) NOT NULL,
-    condition_rating ENUM('New', 'Good', 'Fair', 'Poor') NOT NULL DEFAULT 'New',
-    FOREIGN KEY (book_id) REFERENCES books(book_id) ON DELETE CASCADE
-);
+##########################
+# File: models.py
+##########################
 
--- Book_authors (many-to-many relationship between books and authors)
-CREATE TABLE book_authors (
-    book_id INT NOT NULL,
-    author_id INT NOT NULL,
-    role ENUM('Primary', 'Co-author', 'Editor', 'Translator') DEFAULT 'Primary',
-    PRIMARY KEY (book_id, author_id),
-    FOREIGN KEY (book_id) REFERENCES books(book_id) ON DELETE CASCADE,
-    FOREIGN KEY (author_id) REFERENCES authors(author_id) ON DELETE CASCADE
-);
+from pydantic import BaseModel, Field
+from typing import Optional, List
+from datetime import date, datetime
 
--- Book_categories (many-to-many relationship between books and categories)
-CREATE TABLE book_categories (
-    book_id INT NOT NULL,
-    category_id INT NOT NULL,
-    PRIMARY KEY (book_id, category_id),
-    FOREIGN KEY (book_id) REFERENCES books(book_id) ON DELETE CASCADE,
-    FOREIGN KEY (category_id) REFERENCES categories(category_id) ON DELETE CASCADE
-);
+# User models
+class UserBase(BaseModel):
+    username: str
+    email: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    role: str = "user"
 
--- Loans table (tracks borrowed books)
-CREATE TABLE loans (
-    loan_id INT AUTO_INCREMENT PRIMARY KEY,
-    copy_id INT NOT NULL,
-    member_id INT NOT NULL,
-    checkout_date DATE NOT NULL,
-    due_date DATE NOT NULL,
-    return_date DATE,
-    renewed_times INT DEFAULT 0 CHECK (renewed_times >= 0 AND renewed_times <= 3),
-    FOREIGN KEY (copy_id) REFERENCES book_copies(copy_id) ON DELETE CASCADE,
-    FOREIGN KEY (member_id) REFERENCES members(member_id) ON DELETE CASCADE
-);
+class UserCreate(UserBase):
+    password: str
 
--- Reservations table
-CREATE TABLE reservations (
-    reservation_id INT AUTO_INCREMENT PRIMARY KEY,
-    book_id INT NOT NULL,
-    member_id INT NOT NULL,
-    reservation_date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    expiry_date DATE NOT NULL,
-    status ENUM('Pending', 'Fulfilled', 'Expired', 'Cancelled') NOT NULL DEFAULT 'Pending',
-    FOREIGN KEY (book_id) REFERENCES books(book_id) ON DELETE CASCADE,
-    FOREIGN KEY (member_id) REFERENCES members(member_id) ON DELETE CASCADE
-);
+class User(UserBase):
+    user_id: int
+    created_at: datetime
 
--- Fines table
-CREATE TABLE fines (
-    fine_id INT AUTO_INCREMENT PRIMARY KEY,
-    loan_id INT NOT NULL,
-    amount DECIMAL(10, 2) NOT NULL CHECK (amount > 0),
-    reason ENUM('Late Return', 'Damaged Item', 'Lost Item') NOT NULL,
-    issued_date DATE NOT NULL,
-    paid_date DATE,
-    payment_status ENUM('Pending', 'Paid', 'Waived') NOT NULL DEFAULT 'Pending',
-    FOREIGN KEY (loan_id) REFERENCES loans(loan_id) ON DELETE CASCADE
-);
+    class Config:
+        orm_mode = True
 
--- Library staff table
-CREATE TABLE staff (
-    staff_id INT AUTO_INCREMENT PRIMARY KEY,
-    first_name VARCHAR(50) NOT NULL,
-    last_name VARCHAR(50) NOT NULL,
-    email VARCHAR(100) UNIQUE NOT NULL,
-    phone_number VARCHAR(15),
-    role ENUM('Librarian', 'Assistant', 'Admin', 'IT Support') NOT NULL,
-    hire_date DATE NOT NULL,
-    department VARCHAR(50),
-    supervisor_id INT,
-    FOREIGN KEY (supervisor_id) REFERENCES staff(staff_id) ON DELETE SET NULL
-);
+# Project models
+class ProjectBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    owner_id: int
+    deadline: Optional[date] = None
+    status: str = "active"
 
--- SAMPLE DATA INSERTION
+class ProjectCreate(ProjectBase):
+    pass
 
--- Sample Members
-INSERT INTO members (first_name, last_name, email, phone_number, address, date_of_birth, registration_date, membership_status, membership_expiry)
-VALUES
-    ('John', 'Smith', 'john.smith@email.com', '555-123-4567', '123 Main St, Anytown', '1985-03-15', '2023-01-10', 'Active', '2025-01-10'),
-    ('Emma', 'Johnson', 'emma.j@email.com', '555-234-5678', '456 Oak Ave, Somecity', '1992-07-22', '2023-02-15', 'Active', '2025-02-15'),
-    ('Michael', 'Brown', 'mbrown@email.com', '555-345-6789', '789 Pine Rd, Otherville', '1978-11-05', '2023-03-20', 'Active', '2025-03-20'),
-    ('Sarah', 'Davis', 'sarah.d@email.com', '555-456-7890', '101 Elm St, Anytown', '1990-05-30', '2023-04-25', 'Suspended', '2025-04-25'),
-    ('David', 'Wilson', 'dwilson@email.com', '555-567-8901', '202 Maple Dr, Somecity', '1982-09-18', '2023-05-30', 'Active', '2025-05-30');
+class Project(ProjectBase):
+    project_id: int
+    created_at: datetime
 
--- Sample Member Cards
-INSERT INTO member_cards (member_id, issue_date, expiry_date)
-VALUES
-    (1, '2023-01-10', '2025-01-10'),
-    (2, '2023-02-15', '2025-02-15'),
-    (3, '2023-03-20', '2025-03-20'),
-    (4, '2023-04-25', '2025-04-25'),
-    (5, '2023-05-30', '2025-05-30');
+    class Config:
+        orm_mode = True
 
--- Sample Authors
-INSERT INTO authors (first_name, last_name, birth_year, death_year, nationality, biography)
-VALUES
-    ('Jane', 'Austen', 1775, 1817, 'British', 'Famous for works like Pride and Prejudice and Sense and Sensibility.'),
-    ('George', 'Orwell', 1903, 1950, 'British', 'Known for dystopian novel 1984 and Animal Farm.'),
-    ('J.K.', 'Rowling', 1965, NULL, 'British', 'Author of the Harry Potter series.'),
-    ('Haruki', 'Murakami', 1949, NULL, 'Japanese', 'Contemporary writer known for surrealist works.'),
-    ('Agatha', 'Christie', 1890, 1976, 'British', 'The Queen of Mystery, wrote numerous detective novels.');
+# Task models
+class TaskBase(BaseModel):
+    title: str
+    description: Optional[str] = None
+    project_id: Optional[int] = None
+    assigned_to: Optional[int] = None
+    created_by: int
+    due_date: Optional[date] = None
+    priority: str = "medium"
+    status: str = "todo"
 
--- Sample Publishers
-INSERT INTO publishers (name, address, contact_email, contact_phone, established_year)
-VALUES
-    ('Penguin Random House', '1745 Broadway, New York, NY', 'info@penguinrandomhouse.com', '212-782-9000', 1927),
-    ('HarperCollins', '195 Broadway, New York, NY', 'contact@harpercollins.com', '212-207-7000', 1817),
-    ('Simon & Schuster', '1230 Avenue of the Americas, New York, NY', 'info@simonandschuster.com', '212-698-7000', 1924),
-    ('Macmillan Publishers', '120 Broadway, New York, NY', 'contact@macmillan.com', '646-307-5151', 1843),
-    ('Hachette Book Group', '1290 Avenue of the Americas, New York, NY', 'info@hachettebookgroup.com', '212-364-1100', 1837);
+class TaskCreate(TaskBase):
+    pass
 
--- Sample Categories
-INSERT INTO categories (name, description, parent_category_id)
-VALUES
-    ('Fiction', 'Literary works created from imagination', NULL),
-    ('Non-Fiction', 'Informational and factual writing', NULL),
-    ('Mystery', 'Fiction dealing with solving a crime or puzzle', 1),
-    ('Science Fiction', 'Fiction with scientific or technological elements', 1),
-    ('Biography', 'Non-fiction account of a person\'s life', 2),
-    ('History', 'Non-fiction about past events', 2),
-    ('Fantasy', 'Fiction with magical or supernatural elements', 1),
-    ('Self-Help', 'Books aimed at personal improvement', 2);
+class Task(TaskBase):
+    task_id: int
+    created_at: datetime
 
--- Sample Books
-INSERT INTO books (isbn, title, publisher_id, publication_year, edition, language, page_count, description)
-VALUES
-    ('9780141439518', 'Pride and Prejudice', 1, 1813, 'Reprint', 'English', 432, 'A romantic novel by Jane Austen.'),
-    ('9780451524935', '1984', 2, 1949, 'Reprint', 'English', 328, 'A dystopian novel by George Orwell.'),
-    ('9780439708180', 'Harry Potter and the Philosopher\'s Stone', 3, 1997, 'First Edition', 'English', 320, 'First book in the Harry Potter series.'),
-    ('9780307476463', 'Norwegian Wood', 4, 1987, 'English Translation', 'English', 296, 'A novel by Haruki Murakami.'),
-    ('9780062073488', 'Murder on the Orient Express', 5, 1934, 'Reprint', 'English', 256, 'A detective novel by Agatha Christie.');
+    class Config:
+        orm_mode = True
 
--- Sample Book Copies
-INSERT INTO book_copies (book_id, acquisition_date, cost, status, location, condition_rating)
-VALUES
-    (1, '2023-01-15', 15.99, 'Available', 'Fiction Section A1', 'Good'),
-    (1, '2023-01-15', 15.99, 'On Loan', 'Fiction Section A1', 'Good'),
-    (2, '2023-02-20', 14.50, 'Available', 'Fiction Section B3', 'New'),
-    (3, '2023-03-25', 20.75, 'Reserved', 'Fantasy Section C2', 'Good'),
-    (3, '2023-03-25', 20.75, 'Available', 'Fantasy Section C2', 'Good'),
-    (4, '2023-04-10', 18.25, 'Under Repair', 'Fiction Section D4', 'Poor'),
-    (5, '2023-05-05', 12.99, 'Available', 'Mystery Section E2', 'Fair');
+class TaskUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    project_id: Optional[int] = None
+    assigned_to: Optional[int] = None
+    due_date: Optional[date] = None
+    priority: Optional[str] = None
+    status: Optional[str] = None
 
--- Sample Book Authors
-INSERT INTO book_authors (book_id, author_id, role)
-VALUES
-    (1, 1, 'Primary'),  -- Jane Austen - Pride and Prejudice
-    (2, 2, 'Primary'),  -- George Orwell - 1984
-    (3, 3, 'Primary'),  -- J.K. Rowling - Harry Potter
-    (4, 4, 'Primary'),  -- Haruki Murakami - Norwegian Wood
-    (5, 5, 'Primary');  -- Agatha Christie - Murder on the Orient Express
+##########################
+# File: main.py
+##########################
 
--- Sample Book Categories
-INSERT INTO book_categories (book_id, category_id)
-VALUES
-    (1, 1),  -- Pride and Prejudice - Fiction
-    (2, 1),  -- 1984 - Fiction
-    (2, 4),  -- 1984 - Science Fiction
-    (3, 1),  -- Harry Potter - Fiction
-    (3, 7),  -- Harry Potter - Fantasy
-    (4, 1),  -- Norwegian Wood - Fiction
-    (5, 1),  -- Murder on the Orient Express - Fiction
-    (5, 3);  -- Murder on the Orient Express - Mystery
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.middleware.cors import CORSMiddleware
+from typing import List
+import database
+from models import User, UserCreate, UserBase, Project, ProjectCreate, ProjectBase, Task, TaskCreate, TaskBase, TaskUpdate
 
--- Sample Loans
-INSERT INTO loans (copy_id, member_id, checkout_date, due_date, return_date, renewed_times)
-VALUES
-    (2, 1, '2024-03-01', '2024-03-15', '2024-03-14', 0),                        -- Returned on time
-    (4, 2, '2024-03-05', '2024-03-19', NULL, 1),                                -- Still out, renewed once
-    (6, 3, '2024-02-20', '2024-03-05', '2024-03-25', 0),                        -- Returned late
-    (1, 4, '2024-01-15', '2024-01-29', '2024-01-25', 0),                        -- Returned early
-    (5, 5, '2024-03-10', '2024-03-24', NULL, 0);                                -- Still out, not renewed
+# Initialize the database
+database.initialize_database()
 
--- Sample Reservations
-INSERT INTO reservations (book_id, member_id, reservation_date, expiry_date, status)
-VALUES
-    (3, 1, '2024-03-01 10:30:00', '2024-03-08', 'Fulfilled'),
-    (2, 3, '2024-03-05 14:45:00', '2024-03-12', 'Pending'),
-    (5, 2, '2024-02-20 09:15:00', '2024-02-27', 'Expired'),
-    (1, 4, '2024-03-15 16:20:00', '2024-03-22', 'Pending'),
-    (4, 5, '2024-03-10 11:00:00', '2024-03-17', 'Cancelled');
+# Create FastAPI app
+app = FastAPI(
+    title="Task Management API",
+    description="CRUD API for task management with MySQL backend",
+    version="1.0.0"
+)
 
--- Sample Fines
-INSERT INTO fines (loan_id, amount, reason, issued_date, paid_date, payment_status)
-VALUES
-    (3, 10.00, 'Late Return', '2024-03-26', NULL, 'Pending'),
-    (4, 5.00, 'Damaged Item', '2024-01-25', '2024-01-30', 'Paid'),
-    (1, 2.50, 'Late Return', '2024-03-16', '2024-03-20', 'Paid'),
-    (2, 15.00, 'Late Return', '2024-03-20', NULL, 'Waived'),
-    (5, 7.50, 'Late Return', '2024-03-25', NULL, 'Pending');
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify exact origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
--- Sample Staff
-INSERT INTO staff (first_name, last_name, email, phone_number, role, hire_date, department, supervisor_id)
-VALUES
-    ('Robert', 'Garcia', 'rgarcia@library.org', '555-111-2222', 'Admin', '2018-06-15', 'Administration', NULL),
-    ('Jennifer', 'Lee', 'jlee@library.org', '555-222-3333', 'Librarian', '2019-04-20', 'Fiction Department', 1),
-    ('William', 'Chen', 'wchen@library.org', '555-333-4444', 'Assistant', '2020-09-10', 'Fiction Department', 2),
-    ('Maria', 'Rodriguez', 'mrodriguez@library.org', '555-444-5555', 'IT Support', '2021-02-28', 'IT Department', 1),
-    ('James', 'Thompson', 'jthompson@library.org', '555-555-6666', 'Librarian', '2019-10-15', 'Non-Fiction Department', 1);
+# Dependency to get database connection
+def get_db():
+    connection = database.create_connection()
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+# Root endpoint
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to the Task Management API"}
+
+#########################
+# User CRUD Operations
+#########################
+
+@app.post("/users/", response_model=User, status_code=status.HTTP_201_CREATED)
+def create_user(user: UserCreate, db = Depends(get_db)):
+    # In production, hash the password securely
+    query = """
+    INSERT INTO users (username, email, password_hash, first_name, last_name, role)
+    VALUES (%s, %s, %s, %s, %s, %s)
+    """
+    params = (user.username, user.email, user.password, user.first_name, user.last_name, user.role)
+    
+    cursor = database.execute_query(db, query, params)
+    if not cursor:
+        raise HTTPException(status_code=400, detail="Could not create user")
+    
+    user_id = cursor.lastrowid
+    
+    # Get the created user
+    query = "SELECT * FROM users WHERE user_id = %s"
+    cursor = database.execute_query(db, query, (user_id,))
+    new_user = cursor.fetchone()
+    
+    return new_user
+
+@app.get("/users/", response_model=List[User])
+def get_users(db = Depends(get_db)):
+    query = "SELECT * FROM users"
+    cursor = database.execute_query(db, query)
+    users = cursor.fetchall()
+    return users
+
+@app.get("/users/{user_id}", response_model=User)
+def get_user(user_id: int, db = Depends(get_db)):
+    query = "SELECT * FROM users WHERE user_id = %s"
+    cursor = database.execute_query(db, query, (user_id,))
+    user = cursor.fetchone()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+@app.put("/users/{user_id}", response_model=User)
+def update_user(user_id: int, user: UserBase, db = Depends(get_db)):
+    # Check if user exists
+    check_query = "SELECT * FROM users WHERE user_id = %s"
+    check_cursor = database.execute_query(db, check_query, (user_id,))
+    existing_user = check_cursor.fetchone()
+    
+    if not existing_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Update user
+    query = """
+    UPDATE users 
+    SET username = %s, email = %s, first_name = %s, last_name = %s, role = %s
+    WHERE user_id = %s
+    """
+    params = (user.username, user.email, user.first_name, user.last_name, user.role, user_id)
+    database.execute_query(db, query, params)
+    
+    # Get updated user
+    updated_cursor = database.execute_query(db, check_query, (user_id,))
+    updated_user = updated_cursor.fetchone()
+    return updated_user
+
+@app.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_user(user_id: int, db = Depends(get_db)):
+    # Check if user exists
+    check_query = "SELECT * FROM users WHERE user_id = %s"
+    check_cursor = database.execute_query(db, check_query, (user_id,))
+    user = check_cursor.fetchone()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Delete user
+    query = "DELETE FROM users WHERE user_id = %s"
+    database.execute_query(db, query, (user_id,))
+    
+    return None
+
+#########################
+# Project CRUD Operations
+#########################
+
+@app.post("/projects/", response_model=Project, status_code=status.HTTP_201_CREATED)
+def create_project(project: ProjectCreate, db = Depends(get_db)):
+    # Verify owner exists
+    check_query = "SELECT * FROM users WHERE user_id = %s"
+    check_cursor = database.execute_query(db, check_query, (project.owner_id,))
+    user = check_cursor.fetchone()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Owner not found")
+    
+    # Create project
+    query = """
+    INSERT INTO projects (name, description, owner_id, deadline, status)
+    VALUES (%s, %s, %s, %s, %s)
+    """
+    params = (project.name, project.description, project.owner_id, project.deadline, project.status)
+    
+    cursor = database.execute_query(db, query, params)
+    if not cursor:
+        raise HTTPException(status_code=400, detail="Could not create project")
+    
+    project_id = cursor.lastrowid
+    
+    # Get the created project
+    query = "SELECT * FROM projects WHERE project_id = %s"
+    cursor = database.execute_query(db, query, (project_id,))
+    new_project = cursor.fetchone()
+    
+    return new_project
+
+@app.get("/projects/", response_model=List[Project])
+def get_projects(db = Depends(get_db)):
+    query = "SELECT * FROM projects"
+    cursor = database.execute_query(db, query)
+    projects = cursor.fetchall()
+    return projects
+
+@app.get("/projects/{project_id}", response_model=Project)
+def get_project(project_id: int, db = Depends(get_db)):
+    query = "SELECT * FROM projects WHERE project_id = %s"
+    cursor = database.execute_query(db, query, (project_id,))
+    project = cursor.fetchone()
+    
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+@app.put("/projects/{project_id}", response_model=Project)
+def update_project(project_id: int, project: ProjectBase, db = Depends(get_db)):
+    # Check if project exists
+    check_query = "SELECT * FROM projects WHERE project_id = %s"
+    check_cursor = database.execute_query(db, check_query, (project_id,))
+    existing_project = check_cursor.fetchone()
+    
+    if not existing_project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Update project
+    query = """
+    UPDATE projects 
+    SET name = %s, description = %s, owner_id = %s, deadline = %s, status = %s
+    WHERE project_id = %s
+    """
+    params = (project.name, project.description, project.owner_id, project.deadline, project.status, project_id)
+    database.execute_query(db, query, params)
+    
+    # Get updated project
+    updated_cursor = database.execute_query(db, check_query, (project_id,))
+    updated_project = updated_cursor.fetchone()
+    return updated_project
+
+@app.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_project(project_id: int, db = Depends(get_db)):
+    # Check if project exists
+    check_query = "SELECT * FROM projects WHERE project_id = %s"
+    check_cursor = database.execute_query(db, check_query, (project_id,))
+    project = check_cursor.fetchone()
+    
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Delete project
+    query = "DELETE FROM projects WHERE project_id = %s"
+    database.execute_query(db, query, (project_id,))
+    
+    return None
+
+#########################
+# Task CRUD Operations
+#########################
+
+@app.post("/tasks/", response_model=Task, status_code=status.HTTP_201_CREATED)
+def create_task(task: TaskCreate, db = Depends(get_db)):
+    # Create task
+    query = """
+    INSERT INTO tasks (title, description, project_id, assigned_to, created_by, due_date, priority, status)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    params = (task.title, task.description, task.project_id, task.assigned_to, 
+              task.created_by, task.due_date, task.priority, task.status)
+    
+    cursor = database.execute_query(db, query, params)
+    if not cursor:
+        raise HTTPException(status_code=400, detail="Could not create task")
+    
+    task_id = cursor.lastrowid
+    
+    # Get the created task
+    query = "SELECT * FROM tasks WHERE task_id = %s"
+    cursor = database.execute_query(db, query, (task_id,))
+    new_task = cursor.fetchone()
+    
+    return new_task
+
+@app.get("/tasks/", response_model=List[Task])
+def get_tasks(project_id: Optional[int] = None, db = Depends(get_db)):
+    if project_id:
+        query = "SELECT * FROM tasks WHERE project_id = %s"
+        cursor = database.execute_query(db, query, (project_id,))
+    else:
+        query = "SELECT * FROM tasks"
+        cursor = database.execute_query(db, query)
+    
+    tasks = cursor.fetchall()
+    return tasks
+
+@app.get("/tasks/{task_id}", response_model=Task)
+def get_task(task_id: int, db = Depends(get_db)):
+    query = "SELECT * FROM tasks WHERE task_id = %s"
+    cursor = database.execute_query(db, query, (task_id,))
+    task = cursor.fetchone()
+    
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+@app.put("/tasks/{task_id}", response_model=Task)
+def update_task(task_id: int, task: TaskUpdate, db = Depends(get_db)):
+    # Check if task exists
+    check_query = "SELECT * FROM tasks WHERE task_id = %s"
+    check_cursor = database.execute_query(db, check_query, (task_id,))
+    existing_task = check_cursor.fetchone()
+    
+    if not existing_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Build dynamic update query based on provided fields
+    update_fields = []
+    params = []
+    
+    if task.title is not None:
+        update_fields.append("title = %s")
+        params.append(task.title)
+    
+    if task.description is not None:
+        update_fields.append("description = %s")
+        params.append(task.description)
+    
+    if task.project_id is not None:
+        update_fields.append("project_id = %s")
+        params.append(task.project_id)
+    
+    if task.assigned_to is not None:
+        update_fields.append("assigned_to = %s")
+        params.append(task.assigned_to)
+    
+    if task.due_date is not None:
+        update_fields.append("due_date = %s")
+        params.append(task.due_date)
+    
+    if task.priority is not None:
+        update_fields.append("priority = %s")
+        params.append(task.priority)
+    
+    if task.status is not None:
+        update_fields.append("status = %s")
+        params.append(task.status)
+    
+    if not update_fields:
+        return existing_task
+    
+    # Add task_id to params
+    params.append(task_id)
+    
+    # Construct and execute update query
+    query = f"UPDATE tasks SET {', '.join(update_fields)} WHERE task_id = %s"
+    database.execute_query(db, query, tuple(params))
+    
+    # Get updated task
+    updated_cursor = database.execute_query(db, check_query, (task_id,))
+    updated_task = updated_cursor.fetchone()
+    return updated_task
+
+@app.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_task(task_id: int, db = Depends(get_db)):
+    # Check if task exists
+    check_query = "SELECT * FROM tasks WHERE task_id = %s"
+    check_cursor = database.execute_query(db, check_query, (task_id,))
+    task = check_cursor.fetchone()
+    
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Delete task
+    query = "DELETE FROM tasks WHERE task_id = %s"
+    database.execute_query(db, query, (task_id,))
+    
+    return None
+
+##########################
+# File: requirements.txt
+##########################
+# fastapi==0.95.1
+# uvicorn==0.22.0
+# python-dotenv==1.0.0
+# mysql-connector-python==8.0.33
+# pydantic==1.10.7
+
+##########################
+# File: .env.example
+##########################
+# DB_HOST=localhost
+# DB_USER=root
+# DB_PASSWORD=password
+# DB_NAME=task_management
